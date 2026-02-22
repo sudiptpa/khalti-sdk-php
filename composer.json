@@ -1,0 +1,38 @@
+{
+  "name": "sudiptpa/khalti-sdk-php",
+  "description": "Framework-agnostic Khalti PHP SDK for ePayment (KPG-2), callback confirmation, and legacy verification APIs.",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [
+    "khalti",
+    "payment",
+    "gateway",
+    "epayment",
+    "php"
+  ],
+  "autoload": {
+    "psr-4": {
+      "Khalti\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Khalti\\Tests\\": "tests/"
+    }
+  },
+  "require": {
+    "php": ">=8.2 <9.0",
+    "ext-json": "*"
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^1.12",
+    "phpunit/phpunit": "^11.5"
+  },
+  "scripts": {
+    "test": "phpunit --configuration=phpunit.xml.dist",
+    "stan": "phpstan analyse --configuration=phpstan.neon.dist --no-progress --debug",
+    "lint": "find src tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
