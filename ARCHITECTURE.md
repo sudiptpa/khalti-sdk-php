@@ -31,6 +31,8 @@
 
 ## Return Verification Lifecycle
 
+Khalti ePayment does not expose a dedicated payment webhook in this flow. Verification is performed by your backend after return redirect.
+
 1. Parse return query with `verification()->parseReturnQuery(...)`.
 2. Validate required fields (`pidx` required).
 3. Verify payment via `verification()->verify(...)`.
