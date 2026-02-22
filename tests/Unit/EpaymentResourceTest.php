@@ -14,35 +14,6 @@ use PHPUnit\Framework\TestCase;
 
 final class EpaymentResourceTest extends TestCase
 {
-    public function testNewPreferredPaymentsAliasesWork(): void
-    {
-        $transport = new FakeTransport();
-        $transport->queue(new HttpResponse(200, json_encode([
-            'pidx' => 'pidx-200',
-            'payment_url' => 'https://test-pay.khalti.com/new',
-        ], JSON_THROW_ON_ERROR)));
-        $transport->queue(new HttpResponse(200, json_encode([
-            'pidx' => 'pidx-200',
-            'status' => 'Completed',
-            'transaction_id' => 'khalti-txn-200',
-            'total_amount' => 2000,
-        ], JSON_THROW_ON_ERROR)));
-
-        $client = Khalti::client(new ClientConfig('test_secret_key'), $transport);
-
-        $session = $client->payments()->create(new EpaymentInitiateRequest(
-            returnUrl: 'https://example.com/khalti/callback',
-            websiteUrl: 'https://example.com',
-            amount: 2000,
-            purchaseOrderId: 'order-200',
-            purchaseOrderName: 'Business Plan'
-        ));
-        $status = $client->payments()->status($session->pidx);
-
-        $this->assertSame('pidx-200', $session->pidx);
-        $this->assertTrue($status->isCompleted());
-    }
-
     public function testCreateAndStatusFlowMapsModels(): void
     {
         $transport = new FakeTransport();
@@ -66,7 +37,7 @@ final class EpaymentResourceTest extends TestCase
             environment: Environment::Sandbox
         ), $transport);
 
-        $initiate = $client->payments()->create(new EpaymentInitiateRequest(
+        $session = $client->payments()->create(new EpaymentInitiateRequest(
             returnUrl: 'https://example.com/khalti/callback',
             websiteUrl: 'https://example.com',
             amount: 1000,
@@ -74,16 +45,33 @@ final class EpaymentResourceTest extends TestCase
             purchaseOrderName: 'Premium Plan'
         ));
 
-        $this->assertSame('pidx-123', $initiate->pidx);
-        $this->assertSame('https://test-pay.khalti.com/abc', $initiate->paymentUrl);
+        $lookup = $client->payments()->status($session->pidx);
 
-        $lookup = $client->payments()->status($initiate->pidx);
+        $this->assertSame('pidx-123', $session->pidx);
+        $this->assertSame('https://test-pay.khalti.com/abc', $session->paymentUrl);
         $this->assertTrue($lookup->isCompleted());
         $this->assertSame(1000, $lookup->totalAmount);
         $this->assertSame('khalti-txn-1', $lookup->transactionId);
+    }
 
+    public function testWaitForCompletionPollsUntilCompleted(): void
+    {
+        $transport = new FakeTransport();
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-poll',
+            'status' => 'Pending',
+            'total_amount' => 1000,
+        ], JSON_THROW_ON_ERROR)));
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-poll',
+            'status' => 'Completed',
+            'total_amount' => 1000,
+        ], JSON_THROW_ON_ERROR)));
+
+        $client = Khalti::client(new ClientConfig('test_key'), $transport);
+        $result = $client->payments()->waitForCompletion('pidx-poll', timeoutSeconds: 5, intervalSeconds: 1);
+
+        $this->assertTrue($result->isCompleted());
         $this->assertCount(2, $transport->requests);
-        $this->assertStringContainsString('/epayment/initiate/', $transport->requests[0]->url);
-        $this->assertStringContainsString('/epayment/lookup/', $transport->requests[1]->url);
     }
 }

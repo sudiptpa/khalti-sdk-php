@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Khalti\Resource;
 
 use Khalti\Internal\ApiClient;
+use Khalti\Model\TransactionDetailResponse;
 use Khalti\Model\TransactionListResponse;
 
 final class TransactionResource
@@ -21,13 +22,13 @@ final class TransactionResource
             'page_size' => $pageSize,
         ]);
 
-        return new TransactionListResponse($raw);
+        return TransactionListResponse::fromArray($raw);
     }
 
-    public function find(string $idx): TransactionListResponse
+    public function find(string $idx): TransactionDetailResponse
     {
         $raw = $this->apiClient->get('/payment/detail/', ['idx' => $idx]);
 
-        return new TransactionListResponse($raw);
+        return TransactionDetailResponse::fromArray($raw);
     }
 }

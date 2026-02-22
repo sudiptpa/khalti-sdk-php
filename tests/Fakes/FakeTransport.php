@@ -8,10 +8,11 @@ use Khalti\Http\HttpRequest;
 use Khalti\Http\HttpResponse;
 use Khalti\Transport\TransportInterface;
 use RuntimeException;
+use Throwable;
 
 final class FakeTransport implements TransportInterface
 {
-    /** @var array<int,HttpResponse> */
+    /** @var array<int,HttpResponse|Throwable> */
     private array $queue = [];
 
     /** @var array<int,HttpRequest> */
@@ -22,6 +23,11 @@ final class FakeTransport implements TransportInterface
         $this->queue[] = $response;
     }
 
+    public function queueThrowable(Throwable $throwable): void
+    {
+        $this->queue[] = $throwable;
+    }
+
     public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
     {
         $this->requests[] = $request;
@@ -30,6 +36,11 @@ final class FakeTransport implements TransportInterface
             throw new RuntimeException('No queued fake response.');
         }
 
-        return array_shift($this->queue);
+        $next = array_shift($this->queue);
+        if ($next instanceof Throwable) {
+            throw $next;
+        }
+
+        return $next;
     }
 }

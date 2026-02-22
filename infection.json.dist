@@ -1,0 +1,20 @@
+{
+  "$schema": "https://infection.github.io/schema.json",
+  "source": {
+    "directories": [
+      "src/Internal",
+      "src/Resource",
+      "src/Model"
+    ]
+  },
+  "logs": {
+    "text": "infection.log"
+  },
+  "phpUnit": {
+    "configDir": ".",
+    "customPath": "vendor/bin/phpunit"
+  },
+  "timeout": 10,
+  "minMsi": 0,
+  "minCoveredMsi": 0
+}
