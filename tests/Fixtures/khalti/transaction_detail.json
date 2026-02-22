@@ -1,0 +1,10 @@
+{
+  "idx": "txn_1",
+  "amount": 1000,
+  "mobile": "9800000001",
+  "state": {
+    "name": "Completed"
+  },
+  "token": "tok_1",
+  "transaction_id": "k_1"
+}

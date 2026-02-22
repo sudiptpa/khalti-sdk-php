@@ -50,6 +50,8 @@ final class ApiClient
      */
     private function send(string $method, string $path, array $payload): array
     {
+        $payload = $this->normalizeRequest($path, $payload);
+
         $url = $this->config->resolvedBaseUrl().'/'.ltrim($path, '/');
         $body = '';
 
@@ -75,32 +77,56 @@ final class ApiClient
             body: $body
         );
 
-        try {
-            $response = $this->transport->send($request, $this->config->timeoutSeconds);
-        } catch (TransportException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
-            throw new TransportException('Transport request failed before receiving response.', 0, $exception);
+        $attempt = 0;
+
+        while (true) {
+            try {
+                $response = $this->transport->send($request, $this->config->timeoutSeconds);
+            } catch (TransportException $exception) {
+                if ($this->shouldRetryTransport($attempt)) {
+                    $this->backoff($attempt);
+                    $attempt++;
+                    continue;
+                }
+
+                throw $exception;
+            } catch (Throwable $exception) {
+                if ($this->shouldRetryTransport($attempt)) {
+                    $this->backoff($attempt);
+                    $attempt++;
+                    continue;
+                }
+
+                throw new TransportException('Transport request failed before receiving response.', 0, $exception);
+            }
+
+            if ($response->statusCode >= 200 && $response->statusCode < 300) {
+                $decoded = $this->decode($response->body);
+
+                return $this->normalizeResponse($path, $decoded);
+            }
+
+            if ($this->shouldRetryHttpStatus($response->statusCode, $attempt)) {
+                $this->backoff($attempt);
+                $attempt++;
+                continue;
+            }
+
+            $decoded = $this->tryDecode($response->body);
+            $decoded = $this->normalizeResponse($path, $decoded);
+            $message = $this->extractErrorMessage($decoded) ?? 'Khalti API request failed.';
+            $context = ['response' => $decoded];
+
+            if ($response->statusCode === 401 || $response->statusCode === 403) {
+                throw new AuthenticationException($message, $response->statusCode, $context);
+            }
+
+            if ($response->statusCode === 400 || $response->statusCode === 422) {
+                throw new ValidationException($message, $response->statusCode, $context);
+            }
+
+            throw new ApiException($message, $response->statusCode, $context);
         }
-
-        $decoded = $this->decode($response->body);
-
-        if ($response->statusCode >= 200 && $response->statusCode < 300) {
-            return $decoded;
-        }
-
-        $message = $this->extractErrorMessage($decoded) ?? 'Khalti API request failed.';
-        $context = ['response' => $decoded];
-
-        if ($response->statusCode === 401 || $response->statusCode === 403) {
-            throw new AuthenticationException($message, $response->statusCode, $context);
-        }
-
-        if ($response->statusCode === 400 || $response->statusCode === 422) {
-            throw new ValidationException($message, $response->statusCode, $context);
-        }
-
-        throw new ApiException($message, $response->statusCode, $context);
     }
 
     /**
@@ -126,6 +152,24 @@ final class ApiClient
     }
 
     /**
+     * @return array<string,mixed>
+     */
+    private function tryDecode(string $body): array
+    {
+        if (trim($body) === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            return [];
+        }
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
      * @param array<string,mixed> $decoded
      */
     private function extractErrorMessage(array $decoded): ?string
@@ -143,5 +187,63 @@ final class ApiClient
         }
 
         return null;
+    }
+
+    private function shouldRetryTransport(int $attempt): bool
+    {
+        return $attempt < $this->config->maxRetries;
+    }
+
+    private function shouldRetryHttpStatus(int $statusCode, int $attempt): bool
+    {
+        if ($attempt >= $this->config->maxRetries) {
+            return false;
+        }
+
+        return in_array($statusCode, $this->config->retryHttpStatusCodes, true);
+    }
+
+    private function backoff(int $attempt): void
+    {
+        if ($this->config->retryBackoffMs === 0) {
+            return;
+        }
+
+        $delayMs = $this->config->retryBackoffMs * (2 ** $attempt);
+        $delayMs = min($delayMs, $this->config->retryMaxBackoffMs);
+
+        usleep($delayMs * 1000);
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     *
+     * @return array<string,mixed>
+     */
+    private function normalizeRequest(string $path, array $payload): array
+    {
+        $normalized = $payload;
+
+        foreach ($this->config->requestNormalizers as $normalizer) {
+            $normalized = $normalizer->normalize($path, $normalized);
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     *
+     * @return array<string,mixed>
+     */
+    private function normalizeResponse(string $path, array $payload): array
+    {
+        $normalized = $payload;
+
+        foreach ($this->config->responseNormalizers as $normalizer) {
+            $normalized = $normalizer->normalize($path, $normalized);
+        }
+
+        return $normalized;
     }
 }

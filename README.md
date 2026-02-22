@@ -9,12 +9,13 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 
 ## Highlights
 
-- Modern resource API: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
-- First-class ePayment flow (KPG-2 style): create and status
-- Redirect verification flow that performs secure server-side lookup
-- Typed models and enums for safer integration code
-- Dependency-light transport abstraction with built-in `CurlTransport`
-- Framework agnostic by design (works in plain PHP, Laravel, Symfony, Slim, etc.)
+- Modern API shape: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
+- ePayment KPG-2 create/status flow with strict backend verification
+- Polling helper: `waitForCompletion()`
+- Idempotency-friendly verification model for safe order fulfillment
+- Retry policy for transient failures (`429`, `5xx`, transport)
+- Typed models and value objects (`MoneyPaisa`, `OrderVerificationResult`)
+- Framework agnostic core with pluggable transport
 
 ## Requirements
 
@@ -30,10 +31,6 @@ composer require sudiptpa/khalti-sdk-php
 ## Quick Start
 
 ```php
-<?php
-
-declare(strict_types=1);
-
 use Khalti\Config\ClientConfig;
 use Khalti\Khalti;
 
@@ -44,158 +41,130 @@ $khalti = Khalti::client(new ClientConfig(
 
 ## ePayment Flow
 
-### 1) Initiate payment
-
 ```php
 use Khalti\Model\EpaymentInitiateRequest;
 
 $request = new EpaymentInitiateRequest(
-    returnUrl: 'https://example.com/payments/khalti/callback',
+    returnUrl: 'https://example.com/payments/khalti/return',
     websiteUrl: 'https://example.com',
-    amount: 1000, // paisa
+    amount: 1000,
     purchaseOrderId: 'ORD-1001',
     purchaseOrderName: 'Pro Subscription'
 );
 
-$init = $khalti->payments()->create($request);
-
-// Redirect user to Khalti hosted page
-header('Location: ' . $init->paymentUrl);
-exit;
+$session = $khalti->payments()->create($request);
+$status = $khalti->payments()->status($session->pidx);
 ```
 
-### 2) Lookup payment status
+## Important: Khalti ePayment Has No Checkout Webhook
+
+Khalti ePayment does **not** provide a dedicated payment webhook for this checkout flow.
+
+You must manually verify payment on your backend before order fulfillment.
+
+Never trust return query params alone.
+
+## Return Verification (Backend)
 
 ```php
-$lookup = $khalti->payments()->status($init->pidx);
+use Khalti\ValueObject\MoneyPaisa;
+use Khalti\Verification\VerificationContext;
 
-if ($lookup->isCompleted()) {
-    // fulfill order
-}
-```
-
-## Payment Verification (Recommended)
-
-### Important: No Payment Webhook in Khalti ePayment
-
-Khalti ePayment does **not** provide a dedicated payment webhook endpoint for checkout completion in this integration flow.
-
-Because of that, your backend must **manually verify payment** using Khalti status lookup (`pidx`) before marking any order as paid.
-
-```php
 $returnPayload = $khalti->verification()->parseReturnQuery($_GET);
-$decision = $khalti->verification()->verify($returnPayload, expectedAmount: 1000);
 
-if ($decision->successful) {
-    // payment verified
-} else {
-    // reject and investigate
-}
-```
-
-`verify()` performs a server-side lookup so your app does not trust return query parameters alone.
-
-Mandatory fulfillment rule:
-
-- Never fulfill an order based only on return/redirect query parameters.
-- Always call backend status verification first.
-- Mark order paid only after verification confirms successful payment.
-
-### Backend Verification Example (Order-safe)
-
-```php
-// Example: verify from backend using your stored order record
-$order = $orderRepository->findById($orderId);
-
-if ($order === null || $order->khaltiPidx === null) {
-    throw new RuntimeException('Order is not linked with Khalti payment session.');
-}
-
-$status = $khalti->payments()->status($order->khaltiPidx);
-
-if (! $status->isCompleted()) {
-    // keep order as unpaid / pending
-    return;
-}
-
-if ($status->totalAmount !== $order->expectedAmountPaisa) {
-    // prevent amount tampering
-    throw new RuntimeException('Amount mismatch during Khalti verification.');
-}
-
-if ($order->isPaid()) {
-    // idempotency: avoid double fulfillment
-    return;
-}
-
-$order->markPaid(
-    gateway: 'khalti',
-    transactionId: $status->transactionId,
-    paidAmount: $status->totalAmount ?? 0
+$result = $khalti->verification()->verify(
+    payload: $returnPayload,
+    context: new VerificationContext(
+        orderId: 'ORD-1001',
+        pidx: $returnPayload->pidx,
+        expectedAmount: MoneyPaisa::of(1000),
+        receivedAtUnix: time(),
+    )
 );
 
-$orderRepository->save($order);
+if (! $result->fulfillable) {
+    // pending/failed/refunded/duplicate
+    return;
+}
+
+// fulfill once
 ```
 
-## Legacy API Support
+## Idempotency (Processed-once Pattern)
+
+Use `IdempotencyStoreInterface` in your app:
 
 ```php
-$verify = $khalti->legacyPayments()->verify($token, 1000);
-$status = $khalti->legacyPayments()->status($token, 1000);
+$idempotencyStore = new App\Payments\Khalti\RedisIdempotencyStore($redis);
+
+$result = $khalti->verification()->verify(
+    payload: $payload,
+    context: new VerificationContext(
+        orderId: $orderId,
+        pidx: $payload->pidx,
+        expectedAmount: MoneyPaisa::of($expectedAmount),
+    ),
+    idempotencyStore: $idempotencyStore,
+);
+```
+
+If the same payment return is received again, status becomes `duplicate` and fulfillment is blocked.
+
+## Polling Helper
+
+```php
+$status = $khalti->payments()->waitForCompletion(
+    pidx: $session->pidx,
+    timeoutSeconds: 30,
+    intervalSeconds: 2,
+);
+```
+
+## Retry Policy
+
+```php
+$config = new ClientConfig(
+    secretKey: $_ENV['KHALTI_SECRET_KEY'],
+    maxRetries: 2,
+    retryBackoffMs: 200,
+    retryMaxBackoffMs: 1200,
+    retryHttpStatusCodes: [429, 500, 502, 503, 504],
+);
 ```
 
 ## Transaction APIs
 
 ```php
 $list = $khalti->transactions()->all(page: 1, pageSize: 20);
-$detail = $khalti->transactions()->find('transaction_idx');
-```
+$detail = $khalti->transactions()->find('txn_idx');
 
-## Laravel Integration Example
-
-Laravel support: this SDK is framework-agnostic and works cleanly with Laravel `v12` and `v13`.
-
-Register singleton in a service provider:
-
-```php
-use Khalti\Config\ClientConfig;
-use Khalti\Khalti;
-use Khalti\KhaltiClient;
-
-$this->app->singleton(KhaltiClient::class, function () {
-    return Khalti::client(new ClientConfig(
-        secretKey: config('services.khalti.secret_key'),
-    ));
-});
-```
-
-Use in a controller:
-
-```php
-public function verifyPaymentReturn(Request $request, KhaltiClient $khalti)
-{
-    $returnPayload = $khalti->verification()->parseReturnQuery($request->query());
-    $decision = $khalti->verification()->verify($returnPayload, expectedAmount: 1000);
-
-    if (! $decision->successful) {
-        abort(400, $decision->message);
-    }
-
-    return response()->json(['status' => 'ok']);
+foreach ($list->records as $row) {
+    echo $row->idx . ' => ' . $row->state . PHP_EOL;
 }
 ```
 
-### Optional: Laravel Transport Example (v12/v13)
-
-If you prefer Laravel's HTTP client over cURL transport, implement a custom transport in your app:
+## Legacy APIs
 
 ```php
-<?php
+$verify = $khalti->legacyPayments()->verify($token, 1000);
+$status = $khalti->legacyPayments()->status($token, 1000);
+```
 
-declare(strict_types=1);
+## Optional Extension Points
 
-namespace App\Support\Payments\Khalti;
+- `RequestNormalizerInterface`
+- `ResponseNormalizerInterface`
+- `IdempotencyStoreInterface`
+- `MismatchCounterInterface`
+- `ClockInterface`
 
+These are optional and do not add runtime dependencies.
+
+## Laravel Integration
+
+Laravel Transport Example:
+
+```php
 use Illuminate\Support\Facades\Http;
 use Khalti\Exception\TransportException;
 use Khalti\Http\HttpRequest;
@@ -210,90 +179,40 @@ final class LaravelTransport implements TransportInterface
         try {
             $response = Http::timeout($timeoutSeconds)
                 ->withHeaders($request->headers)
-                ->send($request->method, $request->url, [
-                    'body' => $request->body,
-                ]);
+                ->send($request->method, $request->url, ['body' => $request->body]);
         } catch (Throwable $e) {
             throw new TransportException('Laravel HTTP transport failed.', 0, $e);
         }
 
-        /** @var array<string,string> $headers */
         $headers = [];
         foreach ($response->headers() as $name => $values) {
             $headers[strtolower($name)] = implode(', ', $values);
         }
 
-        return new HttpResponse(
-            statusCode: $response->status(),
-            body: $response->body(),
-            headers: $headers,
-        );
+        return new HttpResponse($response->status(), $response->body(), $headers);
     }
 }
 ```
 
-Then wire it in your service provider:
+## Troubleshooting
 
-```php
-use App\Support\Payments\Khalti\LaravelTransport;
-use Khalti\Config\ClientConfig;
-use Khalti\Khalti;
-use Khalti\KhaltiClient;
+### Common auth errors
 
-$this->app->singleton(KhaltiClient::class, function () {
-    return Khalti::client(
-        new ClientConfig(secretKey: config('services.khalti.secret_key')),
-        new LaravelTransport(),
-    );
-});
-```
+- `AuthenticationException` (401/403): wrong secret key or wrong environment key.
+- Check sandbox vs production key mismatch.
 
-## Error Handling
+### Amount mismatch causes
 
-```php
-use Khalti\Exception\AuthenticationException;
-use Khalti\Exception\ValidationException;
-use Khalti\Exception\ApiException;
-use Khalti\Exception\TransportException;
-use Khalti\Exception\UnexpectedResponseException;
+- Stored order amount in paisa differs from Khalti lookup amount.
+- Tax/fee math done at UI but not stored in backend order snapshot.
+- Verifying wrong order against wrong `pidx`.
 
-try {
-    $result = $khalti->payments()->status($pidx);
-} catch (AuthenticationException $e) {
-    // invalid key or permission issue
-} catch (ValidationException $e) {
-    // request payload issue
-} catch (TransportException|UnexpectedResponseException $e) {
-    // network failure or malformed response
-} catch (ApiException $e) {
-    // all other API-level failures
-}
-```
+### Return verification checklist
 
-## Custom Transport
-
-Implement `Khalti\Transport\TransportInterface` to plug your own HTTP layer.
-
-```php
-use Khalti\Http\HttpRequest;
-use Khalti\Http\HttpResponse;
-use Khalti\Transport\TransportInterface;
-
-final class MyTransport implements TransportInterface
-{
-    public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
-    {
-        // your client logic
-        return new HttpResponse(200, '{"ok":true}');
-    }
-}
-```
-
-Then inject it:
-
-```php
-$khalti = Khalti::client(new ClientConfig('secret_key'), new MyTransport());
-```
+- Parse query with `parseReturnQuery()`.
+- Verify with `VerificationContext` (`orderId`, `pidx`, `expectedAmount`).
+- Enforce idempotency before fulfillment.
+- Fulfill only when `OrderVerificationResult::isPaid()` and `fulfillable === true`.
 
 ## Testing & Quality
 
@@ -303,9 +222,13 @@ composer stan
 composer lint
 ```
 
+## Package About (GitHub suggestion)
+
+`Framework-agnostic Khalti PHP SDK for ePayment create/status verification, idempotent backend confirmation, and production-safe order fulfillment.`
+
 ## Architecture
 
-See `ARCHITECTURE.md` for package internals and extension points.
+See `ARCHITECTURE.md`.
 
 ## License
 

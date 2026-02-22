@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Khalti\Tests\Unit;
 
 use Khalti\Config\ClientConfig;
+use Khalti\Contracts\RequestNormalizerInterface;
+use Khalti\Contracts\ResponseNormalizerInterface;
 use Khalti\Exception\ApiException;
 use Khalti\Exception\AuthenticationException;
 use Khalti\Exception\TransportException;
@@ -54,7 +56,7 @@ final class ApiClientErrorMappingTest extends TestCase
         $transport = new FakeTransport();
         $transport->queue(new HttpResponse(500, json_encode(['error_key' => 'server_error'], JSON_THROW_ON_ERROR)));
 
-        $client = Khalti::client(new ClientConfig('test_key'), $transport);
+        $client = Khalti::client(new ClientConfig('test_key', maxRetries: 0), $transport);
 
         $this->expectException(ApiException::class);
         $client->payments()->status('pidx-500');
@@ -80,10 +82,92 @@ final class ApiClientErrorMappingTest extends TestCase
             }
         };
 
-        $client = Khalti::client(new ClientConfig('test_key'), $transport);
+        $client = Khalti::client(new ClientConfig('test_key', maxRetries: 0), $transport);
 
         $this->expectException(TransportException::class);
         $client->payments()->status('pidx-timeout');
+    }
+
+    public function testRetriesTransientHttpFailuresThenSucceeds(): void
+    {
+        $transport = new FakeTransport();
+        $transport->queue(new HttpResponse(503, json_encode(['message' => 'retry'], JSON_THROW_ON_ERROR)));
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-ok',
+            'status' => 'Completed',
+            'total_amount' => 1000,
+        ], JSON_THROW_ON_ERROR)));
+
+        $client = Khalti::client(new ClientConfig(
+            secretKey: 'test_key',
+            maxRetries: 1,
+            retryBackoffMs: 0
+        ), $transport);
+
+        $result = $client->payments()->status('pidx-ok');
+
+        $this->assertTrue($result->isCompleted());
+        $this->assertCount(2, $transport->requests);
+    }
+
+    public function testRetriesTransientTransportFailureThenSucceeds(): void
+    {
+        $transport = new FakeTransport();
+        $transport->queueThrowable(new TransportException('Temporary transport outage'));
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-ok',
+            'status' => 'Pending',
+        ], JSON_THROW_ON_ERROR)));
+
+        $client = Khalti::client(new ClientConfig(
+            secretKey: 'test_key',
+            maxRetries: 1,
+            retryBackoffMs: 0
+        ), $transport);
+
+        $client->payments()->status('pidx-ok');
+
+        $this->assertCount(2, $transport->requests);
+    }
+
+    public function testAppliesRequestAndResponseNormalizers(): void
+    {
+        $transport = new FakeTransport();
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-normalized',
+            'status' => 'Completed',
+            'total_amount' => 1000,
+            'custom' => 'from-upstream',
+        ], JSON_THROW_ON_ERROR)));
+
+        $requestNormalizer = new class () implements RequestNormalizerInterface {
+            public function normalize(string $path, array $payload): array
+            {
+                $payload['normalized_request'] = true;
+
+                return $payload;
+            }
+        };
+
+        $responseNormalizer = new class () implements ResponseNormalizerInterface {
+            public function normalize(string $path, array $payload): array
+            {
+                $payload['custom'] = 'normalized-response';
+
+                return $payload;
+            }
+        };
+
+        $client = Khalti::client(new ClientConfig(
+            secretKey: 'test_key',
+            requestNormalizers: [$requestNormalizer],
+            responseNormalizers: [$responseNormalizer]
+        ), $transport);
+
+        $result = $client->payments()->status('pidx-normalized');
+
+        $this->assertSame('normalized-response', $result->raw['custom'] ?? null);
+        $this->assertStringContainsString('normalized_request', $transport->requests[0]->body);
     }
 
     public function testAddsAuthorizationHeaderWithKeyPrefix(): void
