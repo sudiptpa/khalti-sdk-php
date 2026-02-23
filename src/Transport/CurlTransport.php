@@ -13,7 +13,7 @@ final class CurlTransport implements TransportInterface
     public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
     {
         if (!function_exists('curl_init')) {
-            throw new TransportException('cURL extension is required for CurlTransport.');
+            throw new TransportException('Default CurlTransport is unavailable because ext-curl is not installed. Install ext-curl or provide a TransportInterface implementation.');
         }
 
         $handle = curl_init();

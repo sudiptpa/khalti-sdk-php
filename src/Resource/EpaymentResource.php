@@ -25,11 +25,21 @@ final class EpaymentResource
         return EpaymentInitiateResponse::fromArray($raw);
     }
 
+    public function initiate(EpaymentInitiateRequest $request): EpaymentInitiateResponse
+    {
+        return $this->create($request);
+    }
+
     public function status(string $pidx): EpaymentLookupResponse
     {
         $raw = $this->apiClient->post('/epayment/lookup/', ['pidx' => $pidx]);
 
         return EpaymentLookupResponse::fromArray($raw);
+    }
+
+    public function lookup(string $pidx): EpaymentLookupResponse
+    {
+        return $this->status($pidx);
     }
 
     public function waitForCompletion(string $pidx, int $timeoutSeconds = 30, int $intervalSeconds = 2): EpaymentLookupResponse
