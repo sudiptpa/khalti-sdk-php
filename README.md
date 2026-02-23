@@ -12,6 +12,7 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 - Modern resource API: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
 - ePayment KPG-2 create/status flow with strict backend verification
 - First-class payload models (`CustomerInfo`, `AmountBreakdownItem`, `ProductDetail`)
+- Typed models and value objects (`MoneyPaisa`, `OrderVerificationResult`)
 - Polling helper: `waitForCompletion()`
 - Idempotency-friendly verification model for safe order fulfillment
 - Retry policy for transient failures (`429`, `5xx`, transport)
@@ -20,8 +21,6 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 ## Requirements
 
 - PHP `8.2+`
-- `ext-json`
-
 `ext-curl` is optional. It is only required when using the built-in `CurlTransport`.
 
 ## Installation
