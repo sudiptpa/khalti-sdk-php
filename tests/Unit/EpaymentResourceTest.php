@@ -54,6 +54,36 @@ final class EpaymentResourceTest extends TestCase
         $this->assertSame('khalti-txn-1', $lookup->transactionId);
     }
 
+    public function testInitiateAndLookupAliasesUseSameFlow(): void
+    {
+        $transport = new FakeTransport();
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-200',
+            'payment_url' => 'https://test-pay.khalti.com/xyz',
+        ], JSON_THROW_ON_ERROR)));
+        $transport->queue(new HttpResponse(200, json_encode([
+            'pidx' => 'pidx-200',
+            'status' => 'Pending',
+            'total_amount' => 1500,
+        ], JSON_THROW_ON_ERROR)));
+
+        $client = Khalti::client(new ClientConfig('test_key'), $transport);
+
+        $session = $client->payments()->initiate(new EpaymentInitiateRequest(
+            returnUrl: 'https://example.com/khalti/callback',
+            websiteUrl: 'https://example.com',
+            amount: 1500,
+            purchaseOrderId: 'order-200',
+            purchaseOrderName: 'Pro Plan'
+        ));
+
+        $lookup = $client->payments()->lookup($session->pidx);
+
+        $this->assertSame('pidx-200', $session->pidx);
+        $this->assertSame(1500, $lookup->totalAmount);
+        $this->assertCount(2, $transport->requests);
+    }
+
     public function testWaitForCompletionPollsUntilCompleted(): void
     {
         $transport = new FakeTransport();

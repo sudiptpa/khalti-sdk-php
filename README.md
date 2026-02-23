@@ -9,18 +9,20 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 
 ## Highlights
 
-- Modern API shape: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
+- Modern resource API: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
 - ePayment KPG-2 create/status flow with strict backend verification
+- First-class payload models (`CustomerInfo`, `AmountBreakdownItem`, `ProductDetail`)
 - Polling helper: `waitForCompletion()`
 - Idempotency-friendly verification model for safe order fulfillment
 - Retry policy for transient failures (`429`, `5xx`, transport)
-- Typed models and value objects (`MoneyPaisa`, `OrderVerificationResult`)
-- Framework agnostic core with pluggable transport
+- Framework agnostic core with pluggable `TransportInterface`
 
 ## Requirements
 
 - PHP `8.2+`
 - `ext-json`
+
+`ext-curl` is optional. It is only required when using the built-in `CurlTransport`.
 
 ## Installation
 
@@ -28,7 +30,7 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 composer require sudiptpa/khalti-sdk-php
 ```
 
-## Quick Start
+## Basic Usage (default CurlTransport)
 
 ```php
 use Khalti\Config\ClientConfig;
@@ -39,21 +41,116 @@ $khalti = Khalti::client(new ClientConfig(
 ));
 ```
 
+If `ext-curl` is not installed, default transport throws a clear exception telling you to install `ext-curl` or pass your own transport.
+
+## Transport Examples
+
+### 1) Custom Transport (framework-agnostic)
+
+```php
+use Khalti\Exception\TransportException;
+use Khalti\Http\HttpRequest;
+use Khalti\Http\HttpResponse;
+use Khalti\Transport\TransportInterface;
+
+final class MyTransport implements TransportInterface
+{
+    public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
+    {
+        // Send request with your preferred HTTP client.
+        throw new TransportException('Implement transport send logic.');
+    }
+}
+
+$khalti = Khalti::client(
+    new ClientConfig(secretKey: $_ENV['KHALTI_SECRET_KEY']),
+    new MyTransport(),
+);
+```
+
+### 2) PSR-18 / Guzzle adapter example (docs-only)
+
+```php
+// Example direction only:
+// Build your own adapter implementing TransportInterface
+// and internally call a PSR-18 client (Guzzle, Symfony, etc.).
+```
+
+### 3) Built-in CurlTransport
+
+```php
+use Khalti\Transport\CurlTransport;
+
+$khalti = Khalti::client(
+    new ClientConfig(secretKey: $_ENV['KHALTI_SECRET_KEY']),
+    new CurlTransport(),
+);
+```
+
+### 4) Custom Laravel Transport
+
+```php
+use Illuminate\Support\Facades\Http;
+use Khalti\Exception\TransportException;
+use Khalti\Http\HttpRequest;
+use Khalti\Http\HttpResponse;
+use Khalti\Transport\TransportInterface;
+use Throwable;
+
+final class LaravelTransport implements TransportInterface
+{
+    public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
+    {
+        try {
+            $response = Http::timeout($timeoutSeconds)
+                ->withHeaders($request->headers)
+                ->send($request->method, $request->url, ['body' => $request->body]);
+        } catch (Throwable $e) {
+            throw new TransportException('Laravel HTTP transport failed.', 0, $e);
+        }
+
+        $headers = [];
+        foreach ($response->headers() as $name => $values) {
+            $headers[strtolower($name)] = implode(', ', $values);
+        }
+
+        return new HttpResponse($response->status(), $response->body(), $headers);
+    }
+}
+```
+
 ## ePayment Flow
 
 ```php
+use Khalti\Model\AmountBreakdownItem;
+use Khalti\Model\CustomerInfo;
 use Khalti\Model\EpaymentInitiateRequest;
+use Khalti\Model\ProductDetail;
 
-$request = new EpaymentInitiateRequest(
+$request = EpaymentInitiateRequest::make(
     returnUrl: 'https://example.com/payments/khalti/return',
     websiteUrl: 'https://example.com',
     amount: 1000,
     purchaseOrderId: 'ORD-1001',
-    purchaseOrderName: 'Pro Subscription'
-);
+    purchaseOrderName: 'Pro Subscription',
+)
+    ->setCustomerInfo(new CustomerInfo(
+        name: 'Sujip Thapa',
+        email: 'sudiptpa@gmail.com',
+        phone: '9800000000',
+    ))
+    ->addAmountBreakdownItem(new AmountBreakdownItem('Subtotal', 900))
+    ->addAmountBreakdownItem(new AmountBreakdownItem('Tax', 100))
+    ->addProductDetail(new ProductDetail(
+        identity: 'SKU-1001',
+        name: 'Pro Subscription',
+        totalPrice: 1000,
+        quantity: 1,
+        unitPrice: 1000,
+    ));
 
-$session = $khalti->payments()->create($request);
-$status = $khalti->payments()->status($session->pidx);
+$session = $khalti->payments()->initiate($request); // alias: create($request)
+$status = $khalti->payments()->lookup($session->pidx); // alias: status($session->pidx)
 ```
 
 ## Important: Khalti ePayment Has No Checkout Webhook
@@ -70,13 +167,13 @@ Never trust return query params alone.
 use Khalti\ValueObject\MoneyPaisa;
 use Khalti\Verification\VerificationContext;
 
-$returnPayload = $khalti->verification()->parseReturnQuery($_GET);
+$payload = $khalti->verification()->parseReturnQuery($_GET);
 
 $result = $khalti->verification()->verify(
-    payload: $returnPayload,
+    payload: $payload,
     context: new VerificationContext(
         orderId: 'ORD-1001',
-        pidx: $returnPayload->pidx,
+        pidx: $payload->pidx,
         expectedAmount: MoneyPaisa::of(1000),
         receivedAtUnix: time(),
     )
@@ -159,40 +256,6 @@ $status = $khalti->legacyPayments()->status($token, 1000);
 - `ClockInterface`
 
 These are optional and do not add runtime dependencies.
-
-## Laravel Integration
-
-Laravel Transport Example:
-
-```php
-use Illuminate\Support\Facades\Http;
-use Khalti\Exception\TransportException;
-use Khalti\Http\HttpRequest;
-use Khalti\Http\HttpResponse;
-use Khalti\Transport\TransportInterface;
-use Throwable;
-
-final class LaravelTransport implements TransportInterface
-{
-    public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
-    {
-        try {
-            $response = Http::timeout($timeoutSeconds)
-                ->withHeaders($request->headers)
-                ->send($request->method, $request->url, ['body' => $request->body]);
-        } catch (Throwable $e) {
-            throw new TransportException('Laravel HTTP transport failed.', 0, $e);
-        }
-
-        $headers = [];
-        foreach ($response->headers() as $name => $values) {
-            $headers[strtolower($name)] = implode(', ', $values);
-        }
-
-        return new HttpResponse($response->status(), $response->body(), $headers);
-    }
-}
-```
 
 ## Troubleshooting
 
