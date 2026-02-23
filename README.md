@@ -68,13 +68,71 @@ $khalti = Khalti::client(
 );
 ```
 
-### 2) PSR-18 / Guzzle adapter example (docs-only)
+### 2) PSR-18 / Guzzle adapter example
 
 ```php
-// Example direction only:
-// Build your own adapter implementing TransportInterface
-// and internally call a PSR-18 client (Guzzle, Symfony, etc.).
+use GuzzleHttp\Client;
+use Http\Adapter\Guzzle7\Client as GuzzleAdapter;
+use Khalti\Config\ClientConfig;
+use Khalti\Exception\TransportException;
+use Khalti\Http\HttpRequest;
+use Khalti\Http\HttpResponse;
+use Khalti\Khalti;
+use Khalti\Transport\TransportInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
+use Throwable;
+
+final class Psr18Transport implements TransportInterface
+{
+    public function __construct(
+        private readonly \Psr\Http\Client\ClientInterface $client,
+        private readonly RequestFactoryInterface $requestFactory,
+        private readonly StreamFactoryInterface $streamFactory,
+    ) {
+    }
+
+    public function send(HttpRequest $request, int $timeoutSeconds): HttpResponse
+    {
+        try {
+            $psrRequest = $this->requestFactory
+                ->createRequest($request->method, $request->url);
+
+            foreach ($request->headers as $name => $value) {
+                $psrRequest = $psrRequest->withHeader($name, $value);
+            }
+
+            if ($request->body !== '') {
+                $psrRequest = $psrRequest->withBody($this->streamFactory->createStream($request->body));
+            }
+
+            $psrResponse = $this->client->sendRequest($psrRequest);
+        } catch (Throwable $e) {
+            throw new TransportException('PSR-18 transport failed.', 0, $e);
+        }
+
+        $headers = [];
+        foreach ($psrResponse->getHeaders() as $name => $values) {
+            $headers[strtolower($name)] = implode(', ', $values);
+        }
+
+        return new HttpResponse(
+            $psrResponse->getStatusCode(),
+            (string) $psrResponse->getBody(),
+            $headers
+        );
+    }
+}
+
+$psr18 = new GuzzleAdapter(new Client());
+
+$khalti = Khalti::client(
+    new ClientConfig(secretKey: $_ENV['KHALTI_SECRET_KEY']),
+    new Psr18Transport($psr18, $requestFactory, $streamFactory),
+);
 ```
+
+Note: This PSR-18 example requires user-land packages (for example `guzzlehttp/guzzle`, `php-http/guzzle7-adapter`, and PSR-17 factories). They are optional and not required by this SDK.
 
 ### 3) Built-in CurlTransport
 
