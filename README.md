@@ -342,10 +342,6 @@ composer stan
 composer lint
 ```
 
-## Package About (GitHub suggestion)
-
-`Framework-agnostic Khalti PHP SDK for ePayment create/status verification, idempotent backend confirmation, and production-safe order fulfillment.`
-
 ## Architecture
 
 See `ARCHITECTURE.md`.
