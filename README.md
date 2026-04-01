@@ -7,6 +7,11 @@ Framework-agnostic Khalti SDK for modern ePayment integrations in PHP.
 [![Total Downloads](https://img.shields.io/packagist/dt/sudiptpa/khalti-sdk-php.svg)](https://packagist.org/packages/sudiptpa/khalti-sdk-php)
 [![License](https://img.shields.io/packagist/l/sudiptpa/khalti-sdk-php.svg)](LICENSE)
 
+---
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sudiptpa)
+
+If this package has been useful to you, GitHub Sponsors is a simple way to support ongoing maintenance, improvements, and future releases.
+
 ## Highlights
 
 - Modern resource API: `payments()`, `verification()`, `legacyPayments()`, `transactions()`
